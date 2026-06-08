@@ -955,7 +955,12 @@ callbacks.Register("CreateMove", function()
 end)
 
 resolve()
+pcall(resolve_model_fns)
 local n = 0; for _ in pairs(SKINS) do n = n + 1 end
 print(string.format("[changer] ready: %d weapons, set_model=%s", n, fn.set_model and "ok" or "NIL"))
+local ok_root, root_str = pcall(models_root)
+print(string.format("[changer] precache: fn=%s irs=%s cbuf=%s root=%s",
+    fnptr.precache and "ok" or "NIL", g_IRS and "ok" or "NIL",
+    fnptr.cbuf_insert and "ok" or "NIL", tostring(ok_root and root_str or "ERR")))
 
 return C
