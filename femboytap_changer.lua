@@ -675,6 +675,63 @@ local function model_on_draw()
     apply_local_model(pawn)
 end
 
+local FSN_INDEX, FSN_STAGE = 36, 6
+local fsn_cb, fsn_orig, fsn_orig_fn, fsn_slot
+
+local function model_on_fsn_apply()
+    local path = state.localModel
+    if not path or path == "" or not fnptr.set_model then return end
+    local mh = ffi.C.GetModuleHandleA(DLL); if mh == nil then return end
+    local base = tonumber(ffi.cast("uintptr_t", mh)); if not base or base == 0 then return end
+    local pawn = r_ptr(base + off.dwLocalPlayerPawn); if not valid(pawn) then return end
+    if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
+    if not pawn_alive(pawn) then return end
+    apply_local_model(pawn)
+end
+
+local function install_fsn_hook()
+    if fsn_cb then return true end
+    model_ffi()
+    pcall(function() ffi.cdef[[ int VirtualProtect(void*, size_t, uint32_t, uint32_t*); ]] end)
+    local ok = false
+    pcall(function()
+        local client = ffi.C.GetModuleHandleA(DLL);            if client == nil then return end
+        local ci = ffi.C.GetProcAddress(client, "CreateInterface"); if ci == nil then return end
+        local CI = ffi.cast("void*(*)(const char*, int*)", ci)
+        local iface = CI("Source2Client002", nil);             if iface == nil then return end
+        local vt = ffi.cast("void***", iface)[0];              if vt == nil then return end
+        fsn_orig    = vt[FSN_INDEX]
+        fsn_orig_fn = ffi.cast("void(*)(void*, int)", fsn_orig)
+        fsn_cb = ffi.cast("void(*)(void*, int)", function(this, stage)
+            if stage == FSN_STAGE then pcall(model_on_fsn_apply) end
+            fsn_orig_fn(this, stage)
+        end)
+        fsn_slot = ffi.cast("void**", ffi.cast("char*", vt) + FSN_INDEX * 8)
+        local oldp = ffi.new("uint32_t[1]")
+        if ffi.C.VirtualProtect(fsn_slot, 8, 0x40, oldp) ~= 0 then
+            fsn_slot[0] = ffi.cast("void*", fsn_cb)
+            ffi.C.VirtualProtect(fsn_slot, 8, oldp[0], oldp)
+            ok = true
+        end
+    end)
+    if not ok and fsn_cb then pcall(function() fsn_cb:free() end); fsn_cb = nil end
+    return ok
+end
+
+local function remove_fsn_hook()
+    pcall(function()
+        if fsn_slot and fsn_orig then
+            local oldp = ffi.new("uint32_t[1]")
+            if ffi.C.VirtualProtect(fsn_slot, 8, 0x40, oldp) ~= 0 then
+                fsn_slot[0] = fsn_orig
+                ffi.C.VirtualProtect(fsn_slot, 8, oldp[0], oldp)
+            end
+        end
+    end)
+    fsn_slot = nil
+    if fsn_cb then pcall(function() fsn_cb:free() end); fsn_cb = nil end
+end
+
 local function run()
 
     if not get_live_local() or not in_game() then
@@ -962,9 +1019,12 @@ callbacks.Register("CreateMove", function()
     if not ok then print("[changer] error: " .. tostring(err)) end
 end)
 
--- Local model is applied at render stage (like the reference's FrameStageNotify
--- stage 6), not in CreateMove -- doing it in prediction leaves models in T-pose.
-callbacks.Register("Draw", function() pcall(model_on_draw) end)
+-- Local model is applied from a real FrameStageNotify hook at stage 6 (like the
+-- reference), via a vtable swap. If the hook can't install, fall back to Draw.
+local fsn_ok = install_fsn_hook()
+if not fsn_ok then callbacks.Register("Draw", function() pcall(model_on_draw) end) end
+callbacks.Register("Unload", function() pcall(remove_fsn_hook) end)
+print("[changer] model hook: " .. (fsn_ok and "FrameStageNotify(stage 6)" or "Draw (fallback)"))
 
 resolve()
 pcall(resolve_model_fns)
