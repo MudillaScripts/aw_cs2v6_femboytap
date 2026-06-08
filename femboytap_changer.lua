@@ -45,7 +45,8 @@ local FIELDS = {
 }
 local function pull_offset(j, name, after)
     local init = 1
-    if after then local p = j:find('"' .. after .. '"', 1, true); if p then init = p end end
+
+    if after then local p = j:find('"' .. after .. '"%s*:%s*{'); if p then init = p end end
     local v = j:match('"' .. name .. '"%s*:%s*(%d+)', init)
     return v and tonumber(v) or nil
 end
