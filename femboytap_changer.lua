@@ -309,6 +309,8 @@ local state = {
     pendingReset = {},
     resetKnife   = false,
     resetGlove   = false,
+    localModel       = nil,
+    appliedLocalModel= nil,
 }
 
 local Config = {}
@@ -527,6 +529,142 @@ local function get_live_local()
     return alive and lp or nil
 end
 
+local model_ffi_done = false
+local function model_ffi()
+    if model_ffi_done then return end
+    model_ffi_done = true
+    pcall(function() ffi.cdef[[
+        typedef struct {
+            uint32_t dwFileAttributes;
+            uint32_t ftCreationLo, ftCreationHi;
+            uint32_t ftAccessLo,   ftAccessHi;
+            uint32_t ftWriteLo,    ftWriteHi;
+            uint32_t nFileSizeHigh, nFileSizeLow;
+            uint32_t dwReserved0,  dwReserved1;
+            char     cFileName[260];
+            char     cAlternateFileName[14];
+        } AW_FIND_DATA;
+        void*    FindFirstFileA(const char*, AW_FIND_DATA*);
+        int      FindNextFileA(void*, AW_FIND_DATA*);
+        int      FindClose(void*);
+        uint32_t GetCurrentDirectoryA(uint32_t, char*);
+        typedef struct {
+            int32_t  m_nLength;
+            uint32_t m_nAllocatedSize;
+            union { char* p; char s[8]; } u;
+        } AW_CBufStr;
+    ]] end)
+    pcall(function() ffi.cdef[[ void* GetModuleHandleA(const char*); ]] end)
+    pcall(function() ffi.cdef[[ void* GetProcAddress(void*, const char*); ]] end)
+end
+
+local function find_invalid() return ffi.cast("void*", ffi.cast("intptr_t", -1)) end
+
+local function models_root()
+    model_ffi()
+    local buf = ffi.new("char[?]", 1024)
+    local n = ffi.C.GetCurrentDirectoryA(1024, buf)
+    local cwd = ffi.string(buf, n)
+
+    local root, count = cwd:gsub("[\\/]bin[\\/]win64.*$", "\\csgo\\characters")
+    if count == 0 then return nil end
+    return root
+end
+
+local function scan_into(dir, names, paths)
+    local fd = ffi.new("AW_FIND_DATA")
+    local h = ffi.C.FindFirstFileA(dir .. "\\*", fd)
+    if h == find_invalid() then return end
+    repeat
+        local nm = ffi.string(fd.cFileName)
+        if nm ~= "." and nm ~= ".." then
+            local full = dir .. "\\" .. nm
+            if band(fd.dwFileAttributes, 0x10) ~= 0 then
+                scan_into(full, names, paths)
+            elseif nm:sub(-7) == ".vmdl_c" then
+                local p = full:lower():find("characters[\\/]")
+                if p then
+                    local rel = full:sub(p):gsub("\\", "/")
+                    rel = rel:sub(1, #rel - 2)
+                    names[#names + 1] = nm:sub(1, #nm - 7)
+                    paths[#paths + 1] = rel
+                end
+            end
+        end
+    until ffi.C.FindNextFileA(h, fd) == 0
+    ffi.C.FindClose(h)
+end
+
+local g_modelNames, g_modelPaths
+local function scan_models()
+    if g_modelNames then return g_modelNames, g_modelPaths end
+    local names, paths = { "[ OFF ]" }, { "" }
+    pcall(function()
+        local root = models_root()
+        if root then scan_into(root, names, paths) end
+    end)
+    g_modelNames, g_modelPaths = names, paths
+    return names, paths
+end
+local function rescan_models()
+    g_modelNames, g_modelPaths = nil, nil
+    return scan_models()
+end
+
+local g_IRS = nil
+local PRECACHE_SIG = "40 53 55 57 48 81 EC 80 00 00 00 48 8B 01 49 8B E8 48 8B FA"
+local function resolve_model_fns()
+    if fnptr.precache and g_IRS and fnptr.cbuf_insert then return true end
+    model_ffi()
+    if not fn.precache then
+        local a = mem.FindPattern("resourcesystem.dll", PRECACHE_SIG)
+        if a and a ~= 0 then fn.precache = a end
+    end
+    if fn.precache and not fnptr.precache then
+        fnptr.precache = ffi.cast("void*(*)(void*, void*, const char*)", fn.precache)
+    end
+    if not g_IRS then
+        pcall(function()
+            local rs = ffi.C.GetModuleHandleA("resourcesystem.dll")
+            local ci = rs and ffi.C.GetProcAddress(rs, "CreateInterface")
+            if ci then
+                local CI = ffi.cast("void*(*)(const char*, int*)", ci)
+                local irs = CI("ResourceSystem013", nil)
+                if irs ~= nil then g_IRS = irs end
+            end
+        end)
+    end
+    if not fnptr.cbuf_insert then
+        pcall(function()
+            local t0 = ffi.C.GetModuleHandleA("tier0.dll")
+            local ins = t0 and ffi.C.GetProcAddress(t0, "?Insert@CBufferString@@QEAAPEBDHPEBDH_N@Z")
+            if ins then fnptr.cbuf_insert = ffi.cast("const char*(*)(void*, int, const char*, int, int)", ins) end
+        end)
+    end
+    return fnptr.precache ~= nil and g_IRS ~= nil and fnptr.cbuf_insert ~= nil
+end
+
+local function precache_model(path)
+    if path == nil or path == "" then return end
+    if not resolve_model_fns() then return end
+    local cb = ffi.new("AW_CBufStr")
+    cb.m_nLength = 0
+    cb.m_nAllocatedSize = 0xC0000008
+    cb.u.p = nil
+    pcall(function() fnptr.cbuf_insert(cb, 0, path, -1, 0) end)
+    pcall(function() fnptr.precache(g_IRS, cb, "") end)
+end
+
+local function apply_local_model(pawn)
+    local path = state.localModel
+    if not path or path == "" or not fnptr.set_model then return end
+    local key = tostring(pawn) .. "|" .. path
+    if state.appliedLocalModel == key then return end
+    precache_model(path)
+    pcall(function() fnptr.set_model(ffi.cast("void*", pawn), path) end)
+    state.appliedLocalModel = key
+end
+
 local function run()
 
     if not get_live_local() or not in_game() then
@@ -555,6 +693,8 @@ local function run()
     end
 
     local applied = state.applied
+
+    apply_local_model(pawn)
 
     if state.resetGlove then
         reset_gloves(pawn); state.resetGlove = false
@@ -659,12 +799,15 @@ function Config.serialize()
         local sv  = (tv == "boolean") and (v and "1" or "0") or tostring(v)
         lines[#lines + 1] = string.format("O %s %s %s", k, tag, sv)
     end
+    if state.localModel and state.localModel ~= "" then
+        lines[#lines + 1] = "L " .. state.localModel
+    end
     return table.concat(lines, "\n")
 end
 
 function Config.parse(str)
     if type(str) ~= "string" or not str:find("AWCFG1", 1, true) then return nil end
-    local newCfg, kdef, gdef, opts = {}, nil, nil, {}
+    local newCfg, kdef, gdef, opts, lmodel = {}, nil, nil, {}, nil
     for line in str:gmatch("[^\r\n]+") do
         local t = line:sub(1, 1)
         if t == "K" then
@@ -686,12 +829,15 @@ function Config.parse(str)
                 elseif tag == "n" then opts[k] = tonumber(v) or 0
                 else                   opts[k] = v end
             end
+        elseif t == "L" then
+            local v = line:match("^L%s+(.+)$")
+            if v and v ~= "" then lmodel = v end
         end
     end
-    return newCfg, kdef, gdef, opts
+    return newCfg, kdef, gdef, opts, lmodel
 end
 
-function Config.applyTable(newCfg, kdef, gdef, opts)
+function Config.applyTable(newCfg, kdef, gdef, opts, lmodel)
     for def, c in pairs(state.cfg) do
         if c.kind == "weapon" and not newCfg[def] then state.pendingReset[def] = true end
     end
@@ -701,15 +847,17 @@ function Config.applyTable(newCfg, kdef, gdef, opts)
     state.knifeDef = kdef
     state.gloveDef = gdef
     state.opts     = opts or {}
+    state.localModel = lmodel
+    state.appliedLocalModel = nil
     state.applied  = {}
 end
 
 function Config.save() return file_write(CFG_FILE, Config.serialize()) end
 
 function Config.load()
-    local newCfg, kdef, gdef, opts = Config.parse(file_read(CFG_FILE))
+    local newCfg, kdef, gdef, opts, lmodel = Config.parse(file_read(CFG_FILE))
     if not newCfg then return false end
-    Config.applyTable(newCfg, kdef, gdef, opts)
+    Config.applyTable(newCfg, kdef, gdef, opts, lmodel)
     return true
 end
 
@@ -788,6 +936,17 @@ end
 function C.loadConfig() return Config.load() end
 function C.getOpt(k)     return state.opts[k] end
 function C.setOpt(k, v)  state.opts[k] = v; Config.save() end
+
+function C.modelList()     return scan_models() end
+function C.refreshModels() return rescan_models() end
+function C.getLocalModel() return state.localModel end
+function C.setLocalModel(path)
+    if path == nil or path == "" then state.localModel = nil
+    else state.localModel = path end
+    state.appliedLocalModel = nil
+    Config.save()
+    return state.localModel
+end
 
 callbacks.Register("CreateMove", function()
     local okd, d = pcall(active_weapon_def); g_activeDef = okd and d or nil
