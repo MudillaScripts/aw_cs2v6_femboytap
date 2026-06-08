@@ -127,7 +127,6 @@ local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x314159
 local DLL = "client.dll"
 local sig = {
     set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",
-    set_model_h    = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B B1 88 0C 00 00 48 8B F9",
     update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",
     set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71",
     regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",
@@ -143,7 +142,6 @@ local function resolve()
         if a and a ~= 0 then fn.set_body_group = a + 5 + r_i32(a + 1) end
     end
     if fn.set_model       and not fnptr.set_model       then fnptr.set_model       = ffi.cast("void(*)(void*, const char*)", fn.set_model) end
-    if fn.set_model_h     and not fnptr.set_model_h     then fnptr.set_model_h     = ffi.cast("void(*)(void*, void*)",       fn.set_model_h) end
     if fn.update_subclass and not fnptr.update_subclass then fnptr.update_subclass = ffi.cast("void(*)(void*)",              fn.update_subclass) end
     if fn.set_mesh_mask   and not fnptr.set_mesh_mask   then fnptr.set_mesh_mask   = ffi.cast("void(*)(void*, uint64_t)",    fn.set_mesh_mask) end
     if fn.regen_skins     and not fnptr.regen_skins     then fnptr.regen_skins     = ffi.cast("void(*)(void)",               fn.regen_skins) end
@@ -670,19 +668,18 @@ local function precache_model(path)
     pcall(function() fnptr.precache(g_IRS, cb, "") end)
 end
 
-local function apply_local_model(pawn)
+local function apply_local_model(pawn, lp)
     if not fnptr.set_model then return end
 
     if state.origModelPawn ~= pawn then
-        state.origModelPawn    = pawn
+        state.origModelPawn     = pawn
         state.appliedLocalModel = nil
-        state.overrideActive   = false
-        state.origModelHandle  = nil
-        local node = r_ptr(pawn + off.m_pGameSceneNode)
-        if valid(node) then
-            local h = r_ptr(node + off.m_modelState + off.m_hModel)
-            if h and h ~= 0 then state.origModelHandle = h end
-        end
+        state.overrideActive    = false
+        state.origModelName     = nil
+        if lp then pcall(function()
+            local nm = lp:GetModelName()
+            if type(nm) == "string" and nm:find("%.vmdl") then state.origModelName = nm end
+        end) end
     end
     local path = state.localModel
     if path and path ~= "" then
@@ -693,8 +690,9 @@ local function apply_local_model(pawn)
         state.overrideActive    = true
     else
         if state.appliedLocalModel == "OFF" then return end
-        if state.overrideActive and state.origModelHandle and fnptr.set_model_h then
-            pcall(function() fnptr.set_model_h(ffi.cast("void*", pawn), ffi.cast("void*", state.origModelHandle)) end)
+        if state.overrideActive and state.origModelName then
+            precache_model(state.origModelName)
+            pcall(function() fnptr.set_model(ffi.cast("void*", pawn), state.origModelName) end)
             state.overrideActive = false
         end
         state.appliedLocalModel = "OFF"
@@ -703,7 +701,8 @@ end
 
 local function run()
 
-    if not get_live_local() or not in_game() then
+    local lp = get_live_local()
+    if not lp or not in_game() then
         if next(state.applied) then state.applied = {} end
         return
     end
@@ -730,7 +729,7 @@ local function run()
 
     local applied = state.applied
 
-    apply_local_model(pawn)
+    apply_local_model(pawn, lp)
 
     if state.resetGlove then
         reset_gloves(pawn); state.resetGlove = false
