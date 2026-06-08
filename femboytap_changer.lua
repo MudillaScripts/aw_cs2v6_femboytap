@@ -376,26 +376,53 @@ local function restore_knife(wpn, pawn)
 end
 
 local ATTR_STRUCT = 72
-local ffi_pin = {}
-local function glove_attr_clear(item)
-    local addr = item + off.m_AttributeList + off.m_Attributes
-    w_u64(addr, 0); w_u64(addr + 8, 0)
-    ffi_pin[1] = nil
+
+local game_alloc, game_free
+local function resolve_mem()
+    if game_alloc then return true end
+    pcall(function() ffi.cdef[[ void* GetModuleHandleA(const char*); ]] end)
+    pcall(function() ffi.cdef[[ void* GetProcAddress(void*, const char*); ]] end)
+    local tier0
+    pcall(function() tier0 = ffi.C.GetModuleHandleA("tier0.dll") end)
+    if not tier0 then return false end
+    local pa, pf
+    pcall(function() pa = ffi.C.GetProcAddress(tier0, "MemAlloc_AllocFunc") end)
+    pcall(function() pf = ffi.C.GetProcAddress(tier0, "MemAlloc_FreeFunc") end)
+    if not pa or not pf then return false end
+    pcall(function()
+        game_alloc = ffi.cast("void*(*)(size_t)", pa)
+        game_free  = ffi.cast("void(*)(void*)", pf)
+    end)
+    return game_alloc ~= nil and game_free ~= nil
 end
-local function glove_attr_set(item, paint, seed, wear)
+
+local function glove_attr_remove(item)
     local addr = item + off.m_AttributeList + off.m_Attributes
-    if paint <= 0 then glove_attr_clear(item); return end
+    local size = r_ptr(addr)
+    local ptr  = r_ptr(addr + 8)
+    w_u64(addr, 0); w_u64(addr + 8, 0)
+    if game_free and size ~= 0 and valid(ptr) then
+        pcall(function() game_free(ffi.cast("void*", ptr)) end)
+    end
+end
+
+local function glove_attr_set(item, paint, seed, wear)
+    glove_attr_remove(item)
+    if paint <= 0 then return end
+    if not resolve_mem() then return end
     wear = safe_wear(wear)
-    local buf  = ffi.new("uint8_t[?]", ATTR_STRUCT * 3)
-    local bptr = tonumber(ffi.cast("uintptr_t", buf))
+    local raw  = game_alloc(ATTR_STRUCT * 3)
+    local bptr = tonumber(ffi.cast("uintptr_t", raw))
+    if not bptr or bptr == 0 then return end
+    for i = 0, (ATTR_STRUCT * 3) / 8 - 1 do w_u64(bptr + i * 8, 0) end
     local function mk(i, def, val)
-        local b = bptr + i*ATTR_STRUCT
+        local b = bptr + i * ATTR_STRUCT
         w_u16(b + 0x30, def); w_f32(b + 0x34, val); w_f32(b + 0x38, val)
     end
     mk(0, 6, paint)
     mk(1, 7, seed)
     mk(2, 8, wear)
-    ffi_pin[1] = buf
+    local addr = item + off.m_AttributeList + off.m_Attributes
     w_u64(addr, 3)
     w_u64(addr + 8, bptr)
 end
@@ -443,7 +470,7 @@ local function reset_gloves(pawn)
     local g = pawn + off.m_EconGloves
     w_u8 (g + off.m_bInitialized, 0)
     w_u16(g + off.m_iItemDefinitionIndex, 0)
-    glove_attr_clear(g)
+    glove_attr_remove(g)
     w_u8 (pawn + off.m_bNeedToReApplyGloves, 1)
     glove_key, glove_apply = nil, 0
     if fnptr.set_body_group then
@@ -734,7 +761,6 @@ callbacks.Register("CreateMove", function()
     local ok, err = pcall(run)
     if not ok then print("[changer] error: " .. tostring(err)) end
 end)
-callbacks.Register("Unload", function() ffi_pin[1] = nil end)
 
 resolve()
 local n = 0; for _ in pairs(SKINS) do n = n + 1 end
