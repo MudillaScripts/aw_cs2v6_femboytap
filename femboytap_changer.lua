@@ -665,6 +665,16 @@ local function apply_local_model(pawn)
     state.appliedLocalModel = key
 end
 
+local function model_on_draw()
+    if not state.localModel or state.localModel == "" then return end
+    if not get_live_local() then return end
+    local base = mem.GetModuleBase(DLL); if not base then return end
+    local pawn = r_ptr(base + off.dwLocalPlayerPawn); if not valid(pawn) then return end
+    if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
+    if not pawn_alive(pawn) then return end
+    apply_local_model(pawn)
+end
+
 local function run()
 
     if not get_live_local() or not in_game() then
@@ -693,8 +703,6 @@ local function run()
     end
 
     local applied = state.applied
-
-    apply_local_model(pawn)
 
     if state.resetGlove then
         reset_gloves(pawn); state.resetGlove = false
@@ -953,6 +961,10 @@ callbacks.Register("CreateMove", function()
     local ok, err = pcall(run)
     if not ok then print("[changer] error: " .. tostring(err)) end
 end)
+
+-- Local model is applied at render stage (like the reference's FrameStageNotify
+-- stage 6), not in CreateMove -- doing it in prediction leaves models in T-pose.
+callbacks.Register("Draw", function() pcall(model_on_draw) end)
 
 resolve()
 pcall(resolve_model_fns)
