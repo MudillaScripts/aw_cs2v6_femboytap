@@ -1014,7 +1014,6 @@ function M:_frame()
     end
     clipTop, clipBottom = nil, nil
 
-    -- leftover wheel (not consumed by a listbox) scrolls the whole page
     if maxScroll > 0 and (ms.wheel or 0) ~= 0 and hovering(win.x, win.y + T.titlebar, win.w, win.h - T.titlebar) then
         self._scroll = clamp(self._scroll - (ms.wheel > 0 and 36 or -36), 0, maxScroll)
         ms.wheel = 0
@@ -1119,4 +1118,3 @@ function M:Build(opts)
 end
 
 return M
-

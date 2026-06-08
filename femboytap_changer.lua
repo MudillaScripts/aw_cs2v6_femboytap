@@ -989,7 +989,6 @@ callbacks.Register("CreateMove", function()
     if not ok then print("[changer] error: " .. tostring(err)) end
 end)
 
-
 resolve()
 pcall(resolve_model_fns)
 local n = 0; for _ in pairs(SKINS) do n = n + 1 end
