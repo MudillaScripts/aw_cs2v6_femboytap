@@ -305,11 +305,11 @@ local function safe_wear(wear)
     return wear
 end
 
-local function write_fallback(wpn, paint, wear, seed, stat)
+local function write_fallback(wpn, paint, wear, seed, stat, statval)
     w_i32(wpn + off.m_nFallbackPaintKit, paint)
     w_f32(wpn + off.m_flFallbackWear, safe_wear(wear))
     w_i32(wpn + off.m_nFallbackSeed, seed)
-    w_i32(wpn + off.m_nFallbackStatTrak, stat and 0 or -1)
+    w_i32(wpn + off.m_nFallbackStatTrak, stat and (statval or 0) or -1)
 end
 
 local function mark_item_custom(item)
@@ -348,17 +348,17 @@ local function set_knife_subclass(wpn, def_target, quality)
     return item
 end
 
-local function process_knife(wpn, def_target, paint, wear, seed, stat)
+local function process_knife(wpn, def_target, paint, wear, seed, stat, statval)
     local item = set_knife_subclass(wpn, def_target, 3)
     mark_item_custom(item)
-    write_fallback(wpn, paint, wear, seed, stat)
+    write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
     vcall_void(wpn, 195)
 end
 
-local function process_weapon(wpn, paint, wear, seed, stat)
+local function process_weapon(wpn, paint, wear, seed, stat, statval)
     mark_item_custom(item_ptr(wpn))
-    write_fallback(wpn, paint, wear, seed, stat)
+    write_fallback(wpn, paint, wear, seed, stat, statval)
     refresh_econ(wpn)
 end
 
@@ -566,9 +566,9 @@ local function run()
                         if state.resetKnife and not (kdef and kc) then
                             restore_knife(wpn, pawn); applied[wpn] = nil; state.resetKnife = false; did = true
                         elseif kdef and kc then
-                            local s = "k|"..kdef.."|"..kc.paint.."|"..kc.wear.."|"..kc.seed.."|"..tostring(kc.stat)
+                            local s = "k|"..kdef.."|"..kc.paint.."|"..kc.wear.."|"..kc.seed.."|"..tostring(kc.stat).."|"..tostring(kc.statval or 0)
                             if applied[wpn] ~= s then
-                                process_knife(wpn, kdef, kc.paint, kc.wear, kc.seed, kc.stat); applied[wpn]=s; did=true
+                                process_knife(wpn, kdef, kc.paint, kc.wear, kc.seed, kc.stat, kc.statval); applied[wpn]=s; did=true
                             end
                         end
                     else
@@ -578,9 +578,9 @@ local function run()
                             local c = state.cfg[def]
                             if c then
                                 if c.paint > 0 then
-                                    local s = "w|"..c.paint.."|"..c.wear.."|"..c.seed.."|"..tostring(c.stat)
+                                    local s = "w|"..c.paint.."|"..c.wear.."|"..c.seed.."|"..tostring(c.stat).."|"..tostring(c.statval or 0)
                                     if applied[wpn] ~= s then
-                                        process_weapon(wpn, c.paint, c.wear, c.seed, c.stat); applied[wpn]=s; did=true
+                                        process_weapon(wpn, c.paint, c.wear, c.seed, c.stat, c.statval); applied[wpn]=s; did=true
                                     end
                                 else
                                     local s = "w|none"
@@ -633,8 +633,8 @@ function Config.serialize()
                     "K " .. tostring(state.knifeDef or 0),
                     "G " .. tostring(state.gloveDef or 0) }
     for def, c in pairs(state.cfg) do
-        lines[#lines + 1] = string.format("E %d %d %.6f %d %d %s",
-            def, c.paint or 0, c.wear or 0.0001, c.seed or 0, c.stat and 1 or 0, c.kind or "weapon")
+        lines[#lines + 1] = string.format("E %d %d %.6f %d %d %s %d",
+            def, c.paint or 0, c.wear or 0.0001, c.seed or 0, c.stat and 1 or 0, c.kind or "weapon", c.statval or 0)
     end
     return table.concat(lines, "\n")
 end
@@ -649,12 +649,12 @@ function Config.parse(str)
         elseif t == "G" then
             local v = tonumber(line:match("^G%s+(%-?%d+)")); if v and v ~= 0 then gdef = v end
         elseif t == "E" then
-            local d, p, w, s, st, kind =
-                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE%+%-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)")
+            local d, p, w, s, st, kind, sv =
+                line:match("^E%s+(%-?%d+)%s+(%-?%d+)%s+([%d%.eE%+%-]+)%s+(%-?%d+)%s+(%d)%s+(%a+)%s*(%d*)")
             d, p, w, s = tonumber(d), tonumber(p), tonumber(w), tonumber(s)
             if d then
                 newCfg[d] = { paint = p or 0, wear = w or 0.0001, seed = s or 0,
-                              stat = (st == "1"), kind = kind or "weapon" }
+                              stat = (st == "1"), kind = kind or "weapon", statval = tonumber(sv) or 0 }
             end
         end
     end
@@ -698,7 +698,7 @@ function C.activeDef()   return g_activeDef end
 function C.knifeDef()    return state.knifeDef end
 function C.getCfg(def)   return state.cfg[def] end
 
-function C.apply(item, paint, wear, seed, stat)
+function C.apply(item, paint, wear, seed, stat, statval)
     if not item then return "nothing selected" end
     if item.kind == "glove" and item.def == 0 then
         state.cfg[0]     = nil
@@ -707,7 +707,7 @@ function C.apply(item, paint, wear, seed, stat)
         commit()
         return "gloves: default"
     end
-    state.cfg[item.def] = { paint = paint, wear = wear, seed = seed, stat = stat, kind = item.kind }
+    state.cfg[item.def] = { paint = paint, wear = wear, seed = seed, stat = stat, statval = statval, kind = item.kind }
     if     item.kind == "knife" then state.knifeDef = item.def
     elseif item.kind == "glove" then state.gloveDef = item.def end
     commit()
