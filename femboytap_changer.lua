@@ -2,57 +2,72 @@ local ffi  = ffi
 local band, rshift, bxor, lshift = bit.band, bit.rshift, bit.bxor, bit.lshift
 local floor = math.floor
 
-local off = {
-    dwLocalPlayerPawn       = 36963992,
-    dwLocalPlayerController  = 36828928,
-    dwEntityList            = 38692240,
-    dwNetworkGameClient     = 9478560,
-    dwNetworkGameClient_signOnState = 560,
-    m_pWeaponServices       = 4576,
-    m_hMyWeapons            = 72,
-    m_hActiveWeapon         = 96,
-    m_AttributeManager      = 4480,
-    m_Item                  = 80,
-    m_pGameSceneNode        = 816,
-    m_nSubclassID           = 896,
-    m_szWorldModel          = 48,
-    m_iTeamNum              = 1003,
-    m_iHealth               = 844,
-    m_lifeState             = 852,
-    m_hOwnerEntity          = 1312,
-    m_hPlayerPawn           = 2316,
-    m_steamID               = 1920,
-    m_iItemDefinitionIndex  = 442,
-    m_bRestoreCustomMat     = 440,
-    m_iEntityQuality        = 444,
-    m_iItemIDLow            = 468,
-    m_iItemIDHigh           = 464,
-    m_iAccountID            = 472,
-    m_OriginalOwnerXuidLow  = 5712,
-    m_bInitialized          = 488,
-    m_bDisallowSOC          = 489,
-    m_AttributeList         = 520,
-    m_Attributes            = 8,
-    m_nFallbackPaintKit     = 5720,
-    m_nFallbackSeed         = 5724,
-    m_flFallbackWear        = 5728,
-    m_nFallbackStatTrak     = 5732,
-    m_EconGloves            = 5720,
-    m_bNeedToReApplyGloves  = 5717,
+local off = {}
+
+local DUMPER = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/"
+local OFFSETS = {
+    "dwLocalPlayerPawn", "dwLocalPlayerController", "dwEntityList",
+    "dwNetworkGameClient", "dwNetworkGameClient_signOnState",
 }
+
+local FIELDS = {
+    m_pWeaponServices      = "m_pWeaponServices",
+    m_hMyWeapons           = "m_hMyWeapons",
+    m_hActiveWeapon        = "m_hActiveWeapon",
+    m_AttributeManager     = { "m_AttributeManager", "C_EconEntity" },
+    m_Item                 = "m_Item",
+    m_pGameSceneNode       = "m_pGameSceneNode",
+    m_nSubclassID          = "m_nSubclassID",
+    m_iTeamNum             = "m_iTeamNum",
+    m_iHealth              = "m_iHealth",
+    m_lifeState            = "m_lifeState",
+    m_hOwnerEntity         = "m_hOwnerEntity",
+    m_hPlayerPawn          = "m_hPlayerPawn",
+    m_steamID              = "m_steamID",
+    m_iItemDefinitionIndex = "m_iItemDefinitionIndex",
+    m_bRestoreCustomMat    = "m_bRestoreCustomMaterialAfterPrecache",
+    m_iEntityQuality       = "m_iEntityQuality",
+    m_iItemIDLow           = "m_iItemIDLow",
+    m_iItemIDHigh          = "m_iItemIDHigh",
+    m_iAccountID           = "m_iAccountID",
+    m_OriginalOwnerXuidLow = { "m_OriginalOwnerXuidLow", "C_EconEntity" },
+    m_bInitialized         = "m_bInitialized",
+    m_bDisallowSOC         = "m_bDisallowSOC",
+    m_AttributeList        = "m_AttributeList",
+    m_Attributes           = "m_Attributes",
+    m_nFallbackPaintKit    = { "m_nFallbackPaintKit", "C_EconEntity" },
+    m_nFallbackSeed        = { "m_nFallbackSeed", "C_EconEntity" },
+    m_flFallbackWear       = { "m_flFallbackWear", "C_EconEntity" },
+    m_nFallbackStatTrak    = { "m_nFallbackStatTrak", "C_EconEntity" },
+    m_EconGloves           = { "m_EconGloves", "C_CSPlayerPawn" },
+    m_bNeedToReApplyGloves = { "m_bNeedToReApplyGloves", "C_CSPlayerPawn" },
+
+}
+local function pull_offset(j, name, after)
+    local init = 1
+    if after then local p = j:find('"' .. after .. '"', 1, true); if p then init = p end end
+    local v = j:match('"' .. name .. '"%s*:%s*(%d+)', init)
+    return v and tonumber(v) or nil
+end
 pcall(function()
-    local j = http.Get("https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/offsets.json")
+    local j = http.Get(DUMPER .. "offsets.json")
     if type(j) ~= "string" then return end
-    local function grab(field)
-        local v = j:match('"' .. field .. '"%s*:%s*(%d+)')
-        if v then off[field] = tonumber(v) end
-    end
-    grab("dwLocalPlayerPawn")
-    grab("dwLocalPlayerController")
-    grab("dwEntityList")
-    grab("dwNetworkGameClient")
-    grab("dwNetworkGameClient_signOnState")
+    for _, k in ipairs(OFFSETS) do local v = pull_offset(j, k); if v then off[k] = v end end
 end)
+pcall(function()
+    local j = http.Get(DUMPER .. "client_dll.json")
+    if type(j) ~= "string" then return end
+    for key, spec in pairs(FIELDS) do
+        local name, after = spec, nil
+        if type(spec) == "table" then name, after = spec[1], spec[2] end
+        local v = pull_offset(j, name, after)
+        if v then off[key] = v end
+    end
+end)
+off.m_szWorldModel = 48
+if not off.dwLocalPlayerPawn or not off.m_hMyWeapons then
+    print("[changer] WARNING: offsets not pulled from dumper (network?) -- changer inactive")
+end
 
 local function r_u8 (a) return ffi.cast("uint8_t*",  a)[0] end
 local function r_u16(a) return ffi.cast("uint16_t*", a)[0] end
@@ -286,6 +301,7 @@ end
 
 local state = {
     cfg          = {},
+    opts         = {},
     knifeDef     = nil,
     gloveDef     = nil,
     applied      = {},
@@ -636,12 +652,18 @@ function Config.serialize()
         lines[#lines + 1] = string.format("E %d %d %.6f %d %d %s %d",
             def, c.paint or 0, c.wear or 0.0001, c.seed or 0, c.stat and 1 or 0, c.kind or "weapon", c.statval or 0)
     end
+    for k, v in pairs(state.opts) do
+        local tv = type(v)
+        local tag = (tv == "boolean") and "b" or (tv == "number") and "n" or "s"
+        local sv  = (tv == "boolean") and (v and "1" or "0") or tostring(v)
+        lines[#lines + 1] = string.format("O %s %s %s", k, tag, sv)
+    end
     return table.concat(lines, "\n")
 end
 
 function Config.parse(str)
     if type(str) ~= "string" or not str:find("AWCFG1", 1, true) then return nil end
-    local newCfg, kdef, gdef = {}, nil, nil
+    local newCfg, kdef, gdef, opts = {}, nil, nil, {}
     for line in str:gmatch("[^\r\n]+") do
         local t = line:sub(1, 1)
         if t == "K" then
@@ -656,12 +678,19 @@ function Config.parse(str)
                 newCfg[d] = { paint = p or 0, wear = w or 0.0001, seed = s or 0,
                               stat = (st == "1"), kind = kind or "weapon", statval = tonumber(sv) or 0 }
             end
+        elseif t == "O" then
+            local k, tag, v = line:match("^O%s+(%S+)%s+(%a)%s+(.*)$")
+            if k then
+                if     tag == "b" then opts[k] = (v == "1")
+                elseif tag == "n" then opts[k] = tonumber(v) or 0
+                else                   opts[k] = v end
+            end
         end
     end
-    return newCfg, kdef, gdef
+    return newCfg, kdef, gdef, opts
 end
 
-function Config.applyTable(newCfg, kdef, gdef)
+function Config.applyTable(newCfg, kdef, gdef, opts)
     for def, c in pairs(state.cfg) do
         if c.kind == "weapon" and not newCfg[def] then state.pendingReset[def] = true end
     end
@@ -670,15 +699,16 @@ function Config.applyTable(newCfg, kdef, gdef)
     state.cfg      = newCfg
     state.knifeDef = kdef
     state.gloveDef = gdef
+    state.opts     = opts or {}
     state.applied  = {}
 end
 
 function Config.save() return file_write(CFG_FILE, Config.serialize()) end
 
 function Config.load()
-    local newCfg, kdef, gdef = Config.parse(file_read(CFG_FILE))
+    local newCfg, kdef, gdef, opts = Config.parse(file_read(CFG_FILE))
     if not newCfg then return false end
-    Config.applyTable(newCfg, kdef, gdef)
+    Config.applyTable(newCfg, kdef, gdef, opts)
     return true
 end
 
@@ -755,6 +785,8 @@ function C.clearConfig()
 end
 
 function C.loadConfig() return Config.load() end
+function C.getOpt(k)     return state.opts[k] end
+function C.setOpt(k, v)  state.opts[k] = v; Config.save() end
 
 callbacks.Register("CreateMove", function()
     local okd, d = pcall(active_weapon_def); g_activeDef = okd and d or nil
