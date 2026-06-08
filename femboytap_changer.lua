@@ -17,6 +17,8 @@ local FIELDS = {
     m_AttributeManager     = { "m_AttributeManager", "C_EconEntity" },
     m_Item                 = "m_Item",
     m_pGameSceneNode       = "m_pGameSceneNode",
+    m_modelState           = { "m_modelState", "CSkeletonInstance" },
+    m_hModel               = { "m_hModel", "CModelState" },
     m_nSubclassID          = "m_nSubclassID",
     m_iTeamNum             = "m_iTeamNum",
     m_iHealth              = "m_iHealth",
@@ -66,6 +68,8 @@ pcall(function()
     end
 end)
 off.m_szWorldModel = 48
+off.m_modelState = off.m_modelState or 336
+off.m_hModel     = off.m_hModel     or 160
 if not off.dwLocalPlayerPawn or not off.m_hMyWeapons then
     print("[changer] WARNING: offsets not pulled from dumper (network?) -- changer inactive")
 end
@@ -123,6 +127,7 @@ local function subclass_hash(def) return murmur2(tostring(def):lower(), 0x314159
 local DLL = "client.dll"
 local sig = {
     set_model      = "40 53 48 83 EC ?? 48 8B D9 4C 8B C2 48 8B 0D ?? ?? ?? ?? 48 8D 54 24 40",
+    set_model_h    = "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B B1 88 0C 00 00 48 8B F9",
     update_subclass= "4C 8B DC 53 48 81 EC ?? ?? ?? ?? 48 8B 41",
     set_mesh_mask  = "48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 48 8D 99 ?? ?? ?? ?? 48 8B 71",
     regen_skins    = "48 83 EC ?? E8 ?? ?? ?? ?? 48 85 C0 0F 84 ?? ?? ?? ?? 48 8B 10",
@@ -138,6 +143,7 @@ local function resolve()
         if a and a ~= 0 then fn.set_body_group = a + 5 + r_i32(a + 1) end
     end
     if fn.set_model       and not fnptr.set_model       then fnptr.set_model       = ffi.cast("void(*)(void*, const char*)", fn.set_model) end
+    if fn.set_model_h     and not fnptr.set_model_h     then fnptr.set_model_h     = ffi.cast("void(*)(void*, void*)",       fn.set_model_h) end
     if fn.update_subclass and not fnptr.update_subclass then fnptr.update_subclass = ffi.cast("void(*)(void*)",              fn.update_subclass) end
     if fn.set_mesh_mask   and not fnptr.set_mesh_mask   then fnptr.set_mesh_mask   = ffi.cast("void(*)(void*, uint64_t)",    fn.set_mesh_mask) end
     if fn.regen_skins     and not fnptr.regen_skins     then fnptr.regen_skins     = ffi.cast("void(*)(void)",               fn.regen_skins) end
@@ -584,14 +590,17 @@ local function scan_into(dir, names, paths)
             if band(fd.dwFileAttributes, 0x10) ~= 0 then
                 scan_into(full, names, paths)
             elseif nm:sub(-7) == ".vmdl_c" then
+                local stem = nm:sub(1, #nm - 7)
 
-                local p = full:lower():find("\\csgo\\", 1, true)
-                if p then
-                    local rel = full:sub(p + 6):gsub("\\", "/")
-                    rel = rel:sub(1, #rel - 2)
-                    local parent = dir:match("([^\\/]+)$") or ""
-                    names[#names + 1] = parent .. "/" .. nm:sub(1, #nm - 7)
-                    paths[#paths + 1] = rel
+                if not stem:lower():match("_arms?$") then
+
+                    local p = full:lower():find("\\csgo\\", 1, true)
+                    if p then
+                        local rel = full:sub(p + 6):gsub("\\", "/")
+                        rel = rel:sub(1, #rel - 2)
+                        names[#names + 1] = stem
+                        paths[#paths + 1] = rel
+                    end
                 end
             end
         end
@@ -662,13 +671,34 @@ local function precache_model(path)
 end
 
 local function apply_local_model(pawn)
+    if not fnptr.set_model then return end
+
+    if state.origModelPawn ~= pawn then
+        state.origModelPawn    = pawn
+        state.appliedLocalModel = nil
+        state.overrideActive   = false
+        state.origModelHandle  = nil
+        local node = r_ptr(pawn + off.m_pGameSceneNode)
+        if valid(node) then
+            local h = r_ptr(node + off.m_modelState + off.m_hModel)
+            if h and h ~= 0 then state.origModelHandle = h end
+        end
+    end
     local path = state.localModel
-    if not path or path == "" or not fnptr.set_model then return end
-    local key = tostring(pawn) .. "|" .. path
-    if state.appliedLocalModel == key then return end
-    precache_model(path)
-    pcall(function() fnptr.set_model(ffi.cast("void*", pawn), path) end)
-    state.appliedLocalModel = key
+    if path and path ~= "" then
+        if state.appliedLocalModel == path then return end
+        precache_model(path)
+        pcall(function() fnptr.set_model(ffi.cast("void*", pawn), path) end)
+        state.appliedLocalModel = path
+        state.overrideActive    = true
+    else
+        if state.appliedLocalModel == "OFF" then return end
+        if state.overrideActive and state.origModelHandle and fnptr.set_model_h then
+            pcall(function() fnptr.set_model_h(ffi.cast("void*", pawn), ffi.cast("void*", state.origModelHandle)) end)
+            state.overrideActive = false
+        end
+        state.appliedLocalModel = "OFF"
+    end
 end
 
 local function run()
