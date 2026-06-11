@@ -5,10 +5,6 @@ local floor = math.floor
 local off = {}
 
 local DUMPER = "https://raw.githubusercontent.com/a2x/cs2-dumper/main/output/"
-local OFFSETS = {
-    "dwLocalPlayerPawn", "dwLocalPlayerController", "dwEntityList",
-    "dwNetworkGameClient", "dwNetworkGameClient_signOnState",
-}
 
 local FIELDS = {
     m_pWeaponServices      = "m_pWeaponServices",
@@ -53,11 +49,6 @@ local function pull_offset(j, name, after)
     return v and tonumber(v) or nil
 end
 pcall(function()
-    local j = http.Get(DUMPER .. "offsets.json")
-    if type(j) ~= "string" then return end
-    for _, k in ipairs(OFFSETS) do local v = pull_offset(j, k); if v then off[k] = v end end
-end)
-pcall(function()
     local j = http.Get(DUMPER .. "client_dll.json")
     if type(j) ~= "string" then return end
     for key, spec in pairs(FIELDS) do
@@ -70,9 +61,6 @@ end)
 off.m_szWorldModel = 48
 off.m_modelState = off.m_modelState or 336
 off.m_hModel     = off.m_hModel     or 160
-if not off.dwLocalPlayerPawn or not off.m_hMyWeapons then
-    print("[changer] WARNING: offsets not pulled from dumper (network?) -- changer inactive")
-end
 
 local function r_u8 (a) return ffi.cast("uint8_t*",  a)[0] end
 local function r_u16(a) return ffi.cast("uint16_t*", a)[0] end
@@ -95,6 +83,32 @@ local function read_cstr(a, max)
         t[#t+1] = string.char(c)
     end
     return table.concat(t)
+end
+
+local function sig_rva(modBase, mod, pattern, instrLen)
+    if not modBase then return nil end
+    local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
+    a = tonumber(a)
+    return (a + instrLen + r_i32(a + 3)) - modBase
+end
+local function sig_disp(mod, pattern)
+    local a = mem.FindPattern(mod, pattern); if not a or a == 0 then return nil end
+    return r_i32(tonumber(a) + 3)
+end
+do
+    local cb = mem.GetModuleBase("client.dll")
+    local eb = mem.GetModuleBase("engine2.dll")
+    off.dwEntityList            = sig_rva(cb, "client.dll",  "48 89 0D ?? ?? ?? ?? E9 ?? ?? ?? ?? CC", 7)
+    off.dwLocalPlayerController = sig_rva(cb, "client.dll",  "48 8B 05 ?? ?? ?? ?? 41 89 BE", 7)
+    off.dwNetworkGameClient     = sig_rva(eb, "engine2.dll", "48 89 3D ?? ?? ?? ?? FF 87", 7)
+    off.dwNetworkGameClient_signOnState = sig_disp("engine2.dll", "44 8B 81 ?? ?? ?? ?? 48 8D 0D")
+    if not off.dwLocalPlayerController or not off.dwEntityList or not off.m_hMyWeapons then
+        print("[changer] WARNING: signatures/netvars not resolved -- changer inactive")
+    else
+        print(string.format("[changer] sigs ok: entlist=%X ctrl=%X ngc=%s",
+            off.dwEntityList, off.dwLocalPlayerController,
+            off.dwNetworkGameClient and string.format("%X", off.dwNetworkGameClient) or "nil"))
+    end
 end
 
 local function tou32(x) x = x % 0x100000000; if x < 0 then x = x + 0x100000000 end; return x end
@@ -710,21 +724,15 @@ local function run()
     end
 
     local base = mem.GetModuleBase(DLL); if not base then return end
-    local pawn = r_ptr(base + off.dwLocalPlayerPawn); if not valid(pawn) then return end
-    if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
-
-    if not pawn_alive(pawn) then
-        if next(state.applied) then state.applied = {} end
-        return
-    end
-
     local ctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(ctrl) then return end
     local myHandle = r_u32(ctrl + off.m_hPlayerPawn)
     if myHandle == 0 or myHandle == 0xFFFFFFFF then return end
 
     local elist = r_ptr(base + off.dwEntityList); if not valid(elist) then return end
+    local pawn = handle_to_entity(elist, myHandle); if not valid(pawn) then return end
+    if not valid(r_ptr(pawn + off.m_pGameSceneNode)) then return end
 
-    if handle_to_entity(elist, myHandle) ~= pawn then
+    if not pawn_alive(pawn) then
         if next(state.applied) then state.applied = {} end
         return
     end
@@ -795,9 +803,10 @@ end
 local function active_weapon_def()
     if not get_live_local() then return nil end
     local base = mem.GetModuleBase(DLL); if not base then return nil end
-    local pawn = r_ptr(base + off.dwLocalPlayerPawn); if not valid(pawn) then return nil end
-    local ws   = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return nil end
+    local ctrl = r_ptr(base + off.dwLocalPlayerController); if not valid(ctrl) then return nil end
     local elist = r_ptr(base + off.dwEntityList)
+    local pawn = handle_to_entity(elist, r_u32(ctrl + off.m_hPlayerPawn)); if not valid(pawn) then return nil end
+    local ws   = r_ptr(pawn + off.m_pWeaponServices); if not valid(ws) then return nil end
     local wpn  = handle_to_entity(elist, r_u32(ws + off.m_hActiveWeapon)); if not wpn then return nil end
     return r_u16(item_ptr(wpn) + off.m_iItemDefinitionIndex)
 end
@@ -907,6 +916,7 @@ local C = {}
 C.items     = ITEMS
 C.names     = itemNames
 C.defToItem = DEF_TO_ITEM
+C.offsets   = off
 
 function C.skinList(def) return skin_list_for(def) end
 function C.isKnife(def)  return is_knife(def) end
@@ -957,11 +967,6 @@ function C.resetAll()
     state.resetGlove = true
     commit()
     return "reset all"
-end
-
-function C.forceUpdate()
-    state.applied = {}
-    return "force update queued"
 end
 
 function C.clearConfig()
