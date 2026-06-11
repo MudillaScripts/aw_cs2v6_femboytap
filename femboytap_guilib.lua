@@ -1,5 +1,5 @@
 local M = {}
-M.VERSION = "dev-hitlogtop"
+M.VERSION = "1.0"
 
 local T = {
     x = 360, y = 200, w = 600, h = 440,
